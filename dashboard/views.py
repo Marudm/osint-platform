@@ -1,19 +1,29 @@
 import json
+import os
 import socket
+
 import requests
-from django.shortcuts import render
 from django.http import JsonResponse
+from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
+from dotenv import load_dotenv
+
+load_dotenv()
+ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
+
 
 def index(request):
     return render(request, 'dashboard/index.html')
+
 
 @csrf_exempt
 def scan(request):
     return render(request, 'dashboard/scan.html')
 
+
 def ip_intelligence(request):
     return render(request, 'dashboard/ip_intelligence.html')
+
 
 @csrf_exempt
 def api_scan(request):
@@ -28,6 +38,8 @@ def api_scan(request):
             'findings': []
         }
         abuse = results['abuse_info']
+        if abuse.get('error'):
+            results['findings'].append('ℹ️ Consulta a AbuseIPDB no disponible (revisá ABUSEIPDB_API_KEY)')
         if abuse.get('abuseConfidenceScore', 0) > 50:
             results['risk_score'] += 50
             results['findings'].append('⚠️ IP con alto índice de abuso detectado')
@@ -52,13 +64,13 @@ def api_ip_details(request):
 
         try:
             resolved = socket.gethostbyname(ip)
-        except:
+        except Exception:
             resolved = ip
 
         geo = get_ip_info(resolved)
         abuse = get_abuse_info(resolved)
 
-        # Puertos comunes simulados (en producción usarías nmap)
+        # Escaneo básico de puertos comunes (usar solo sobre sistemas propios o autorizados)
         ports_check = []
         common_ports = [80, 443, 22, 21, 25, 3389, 8080, 8443]
         for port in common_ports:
@@ -69,18 +81,21 @@ def api_ip_details(request):
                 if result == 0:
                     ports_check.append({'port': port, 'status': 'open'})
                 sock.close()
-            except:
+            except Exception:
                 pass
 
         # Reverse DNS
         try:
             hostname = socket.gethostbyaddr(resolved)[0]
-        except:
+        except Exception:
             hostname = 'N/A'
 
         risk_score = 0
         findings = []
         tags = []
+
+        if abuse.get('error'):
+            findings.append('ℹ️ Consulta a AbuseIPDB no disponible (revisá ABUSEIPDB_API_KEY)')
 
         score = abuse.get('abuseConfidenceScore', 0)
         reports = abuse.get('totalReports', 0)
@@ -167,19 +182,7 @@ def get_ip_info(target):
 
 
 def get_abuse_info(target):
-    try:
-        ip = socket.gethostbyname(target)
-        response = requests.get(
-            'https://api.abuseipdb.com/api/v2/check',
-            headers={'Key': '4f474a1a76264729ca754f3f5e48fd54de5f9eb1fea43b8f91388a3e8935b8dce22a9f0d19f54c24', 'Accept': 'application/json'},
-            params={'ipAddress': ip, 'maxAgeInDays': 90},
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json().get('data', {})
-    except:
-        pass
-    return {
+    fallback = {
         'abuseConfidenceScore': 0,
         'totalReports': 0,
         'isPublic': True,
@@ -189,3 +192,18 @@ def get_abuse_info(target):
         'numDistinctUsers': 0,
         'lastReportedAt': 'N/A',
     }
+    if not ABUSEIPDB_API_KEY:
+        return {**fallback, 'error': 'ABUSEIPDB_API_KEY no configurada'}
+    try:
+        ip = socket.gethostbyname(target)
+        response = requests.get(
+            'https://api.abuseipdb.com/api/v2/check',
+            headers={'Key': ABUSEIPDB_API_KEY, 'Accept': 'application/json'},
+            params={'ipAddress': ip, 'maxAgeInDays': 90},
+            timeout=5,
+        )
+        if response.status_code == 200:
+            return response.json().get('data', {})
+        return {**fallback, 'error': f'AbuseIPDB respondió {response.status_code}'}
+    except (requests.RequestException, OSError, ValueError):
+        return {**fallback, 'error': 'No se pudo consultar AbuseIPDB'}

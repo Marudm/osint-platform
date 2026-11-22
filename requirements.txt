@@ -1,0 +1,7 @@
+django==4.2.*
+requests
+python-whois
+dnspython
+reportlab
+folium
+python-dotenv
